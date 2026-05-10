@@ -165,6 +165,14 @@ function parsePacket(packetBytes) {
   return { protocols, flow };
 }
 
+function normalizeHostPair(flow) {
+  const [left, right] = flow.split("->").map((part) => part.trim());
+  if (!left || !right) return "Unknown";
+  const srcHost = left.includes(":") ? left.split(":")[0] : left;
+  const dstHost = right.includes(":") ? right.split(":")[0] : right;
+  return `${srcHost} -> ${dstHost}`;
+}
+
 function buildDidacticExplanation(protocol, count, totalPackets) {
   const ratio = totalPackets > 0 ? ((count / totalPackets) * 100).toFixed(1) : "0.0";
   const base = {
@@ -227,6 +235,7 @@ export async function analyzeCaptureFile(file) {
 
   const protocolCounts = new Map();
   const flowCounts = new Map();
+  const hostFlowCounts = new Map();
   const timeline = [];
 
   const firstTs = packets[0].timestampMs || Date.now();
@@ -243,6 +252,8 @@ export async function analyzeCaptureFile(file) {
     }
 
     flowCounts.set(parsed.flow, (flowCounts.get(parsed.flow) || 0) + 1);
+    const hostPair = normalizeHostPair(parsed.flow);
+    hostFlowCounts.set(hostPair, (hostFlowCounts.get(hostPair) || 0) + 1);
 
     const ts = packet.timestampMs || firstTs;
     const bucket = Math.floor((ts - firstTs) / bucketSize);
@@ -262,12 +273,18 @@ export async function analyzeCaptureFile(file) {
     .slice(0, 6)
     .map(([flow, count]) => ({ flow, count }));
 
+  const topHostFlows = [...hostFlowCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([flow, count]) => ({ flow, count }));
+
   return {
     fileName: file.name,
     packetCount: packets.length,
     protocolDistribution: protocolsSorted,
     explanations,
     topFlows,
+    topHostFlows,
     timeline: timeline.map((count = 0, idx) => ({
       label: `${idx * Math.round(bucketSize / 1000)}s`,
       count,

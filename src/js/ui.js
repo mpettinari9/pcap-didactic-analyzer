@@ -25,8 +25,11 @@ export function renderSamples(samples) {
     const item = document.createElement("li");
     item.className = "sample-item";
     item.innerHTML = `
-      <p class="sample-name">${sample.name}</p>
+      <p class="sample-name">${sample.title || sample.name}</p>
       <p class="sample-description">${sample.description}</p>
+      <button class="sample-load-button" data-sample-id="${sample.id}" type="button">
+        Carica sample
+      </button>
     `;
     list.append(item);
   }

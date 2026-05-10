@@ -16,24 +16,39 @@ import {
   updateChartsFromAnalysis,
 } from "./services/chartService.js";
 
-const DEFAULT_SAMPLES = [
-  {
-    name: "dns-http-basic.pcap",
-    description: "Navigazione web base con richieste DNS e traffico HTTP.",
-  },
-  {
-    name: "tls-handshake-demo.pcapng",
-    description: "Esempio di handshake TLS per introdurre la cifratura.",
-  },
-  {
-    name: "icmp-troubleshooting.pcap",
-    description: "Ping, echo request/reply e diagnostica con ICMP.",
-  },
-];
+let cachedSamples = [];
 
-function initializeSamplesSection() {
-  setSamples(DEFAULT_SAMPLES);
-  renderSamples(DEFAULT_SAMPLES);
+async function initializeSamplesSection() {
+  try {
+    const response = await fetch("./src/data/samples/manifest.json");
+    if (!response.ok) throw new Error("Manifest non trovato");
+    const samples = await response.json();
+    cachedSamples = samples;
+    setSamples(samples);
+    renderSamples(samples);
+  } catch (_error) {
+    cachedSamples = [];
+    setSamples([]);
+    renderSamples([]);
+  }
+}
+
+async function processCaptureFile(file) {
+  setCurrentFile(file);
+  renderFileAccepted(file);
+  updateUploadStatus("Analisi in corso...", "idle");
+
+  try {
+    const analysis = await analyzeCaptureFile(file);
+    renderAnalysisResults(analysis);
+    updateChartsFromAnalysis(analysis);
+    updateUploadStatus("Analisi completata con successo.", "success");
+  } catch (error) {
+    updateUploadStatus(
+      `Errore durante l'analisi: ${error.message || "errore sconosciuto"}.`,
+      "error",
+    );
+  }
 }
 
 async function handleFileSelection(event) {
@@ -60,18 +75,39 @@ async function handleFileSelection(event) {
     return;
   }
 
-  setCurrentFile(file);
-  renderFileAccepted(file);
-  updateUploadStatus("Analisi in corso...", "idle");
+  await processCaptureFile(file);
+}
 
+async function handleSampleClick(event) {
+  const button = event.target.closest(".sample-load-button");
+  if (!button) return;
+
+  const sampleId = button.dataset.sampleId;
+  const sample = cachedSamples.find((item) => item.id === sampleId);
+  if (!sample) {
+    updateUploadStatus("Sample non trovato nel manifest.", "error");
+    return;
+  }
+
+  const parserStatus = await ensureParserLibraryAvailable();
+  if (!parserStatus.ready) {
+    updateUploadStatus(
+      "Parser non disponibile. Controlla la connessione e riprova.",
+      "error",
+    );
+    return;
+  }
+
+  updateUploadStatus(`Caricamento sample ${sample.fileName}...`, "idle");
   try {
-    const analysis = await analyzeCaptureFile(file);
-    renderAnalysisResults(analysis);
-    updateChartsFromAnalysis(analysis);
-    updateUploadStatus("Analisi completata con successo.", "success");
+    const response = await fetch(`./src/data/samples/${sample.fileName}`);
+    if (!response.ok) throw new Error("File sample non disponibile");
+    const blob = await response.blob();
+    const file = new File([blob], sample.fileName, { type: "application/octet-stream" });
+    await processCaptureFile(file);
   } catch (error) {
     updateUploadStatus(
-      `Errore durante l'analisi: ${error.message || "errore sconosciuto"}.`,
+      `Impossibile caricare il sample: ${error.message || "errore sconosciuto"}.`,
       "error",
     );
   }
@@ -79,11 +115,13 @@ async function handleFileSelection(event) {
 
 function attachEventListeners() {
   const input = document.getElementById("pcapInput");
+  const samplesList = document.getElementById("samplesList");
   input.addEventListener("change", handleFileSelection);
+  samplesList.addEventListener("click", handleSampleClick);
 }
 
-function bootstrap() {
-  initializeSamplesSection();
+async function bootstrap() {
+  await initializeSamplesSection();
   destroyCharts();
   renderInitialCharts();
   attachEventListeners();

@@ -1,11 +1,13 @@
 let protocolChart;
 let timelineChart;
+let hostFlowChart;
 
 export function renderInitialCharts() {
   const protocolCtx = document.getElementById("protocolChart");
   const timelineCtx = document.getElementById("timelineChart");
+  const hostFlowCtx = document.getElementById("hostFlowChart");
 
-  if (!protocolCtx || !timelineCtx) return;
+  if (!protocolCtx || !timelineCtx || !hostFlowCtx) return;
 
   protocolChart = new Chart(protocolCtx, {
     type: "doughnut",
@@ -48,15 +50,36 @@ export function renderInitialCharts() {
       },
     },
   });
+
+  hostFlowChart = new Chart(hostFlowCtx, {
+    type: "bar",
+    data: {
+      labels: ["In attesa di analisi"],
+      datasets: [
+        {
+          label: "Flussi",
+          data: [0],
+          backgroundColor: "rgba(54, 98, 255, 0.65)",
+        },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      plugins: { legend: { display: false } },
+      maintainAspectRatio: false,
+      scales: { x: { beginAtZero: true } },
+    },
+  });
 }
 
 export function destroyCharts() {
   protocolChart?.destroy();
   timelineChart?.destroy();
+  hostFlowChart?.destroy();
 }
 
 export function updateChartsFromAnalysis(analysis) {
-  if (!protocolChart || !timelineChart) return;
+  if (!protocolChart || !timelineChart || !hostFlowChart) return;
 
   const labels = analysis.protocolDistribution.map((item) => item.protocol);
   const values = analysis.protocolDistribution.map((item) => item.count);
@@ -84,4 +107,10 @@ export function updateChartsFromAnalysis(analysis) {
   timelineChart.data.labels = timelineLabels.length ? timelineLabels : ["t0"];
   timelineChart.data.datasets[0].data = timelineValues.length ? timelineValues : [0];
   timelineChart.update();
+
+  const hostLabels = (analysis.topHostFlows || []).map((item) => item.flow);
+  const hostValues = (analysis.topHostFlows || []).map((item) => item.count);
+  hostFlowChart.data.labels = hostLabels.length ? hostLabels : ["Nessun flusso"];
+  hostFlowChart.data.datasets[0].data = hostValues.length ? hostValues : [0];
+  hostFlowChart.update();
 }
