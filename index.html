@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PCAP Didactic Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./src/css/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Didactic Network Analysis</p>
+          <h1>PCAP Didactic Analyzer</h1>
+        </div>
+        <p class="tagline">
+          Capire cosa succede nella rete, non solo vedere numeri.
+        </p>
+      </header>
+
+      <main class="layout">
+        <section class="panel upload-panel">
+          <h2>Carica un file di cattura</h2>
+          <p class="panel-description">
+            Formati supportati: <code>.pcap</code>, <code>.pcapng</code>
+          </p>
+          <label class="file-dropzone" for="pcapInput">
+            <input id="pcapInput" type="file" accept=".pcap,.pcapng" />
+            <span class="dropzone-title">Seleziona un file</span>
+            <span class="dropzone-subtitle">oppure trascinalo qui sopra</span>
+          </label>
+          <div id="uploadStatus" class="status idle">
+            Nessun file selezionato.
+          </div>
+        </section>
+
+        <section class="panel samples-panel">
+          <h2>File di esempio</h2>
+          <p class="panel-description">
+            Dataset didattici precaricati per esplorare i concetti senza dover
+            partire da una cattura reale.
+          </p>
+          <ul id="samplesList" class="samples-list"></ul>
+        </section>
+
+        <section class="panel analysis-panel">
+          <h2>Analisi</h2>
+          <div id="analysisPlaceholder" class="placeholder">
+            Carica un file per iniziare l'analisi guidata dei protocolli.
+          </div>
+        </section>
+
+        <section class="panel charts-panel">
+          <h2>Visualizzazione traffico</h2>
+          <div class="chart-grid">
+            <article>
+              <h3>Distribuzione protocolli</h3>
+              <canvas id="protocolChart" aria-label="Grafico protocolli"></canvas>
+            </article>
+            <article>
+              <h3>Traffico nel tempo</h3>
+              <canvas id="timelineChart" aria-label="Grafico temporale"></canvas>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./src/js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "dns-http-basic",
+    "fileName": "dns-http-basic.pcap",
+    "title": "DNS + HTTP Basics",
+    "description": "Sessione di navigazione HTTP con risoluzione DNS."
+  },
+  {
+    "id": "tls-handshake-demo",
+    "fileName": "tls-handshake-demo.pcapng",
+    "title": "TLS Handshake Demo",
+    "description": "Avvio di una connessione HTTPS con handshake TLS."
+  },
+  {
+    "id": "icmp-troubleshooting",
+    "fileName": "icmp-troubleshooting.pcap",
+    "title": "ICMP Troubleshooting",
+    "description": "Flusso ping request/reply per diagnostica di rete."
+  }
+]
