@@ -52,6 +52,30 @@
 
         <section class="panel analysis-panel">
           <h2>Analisi</h2>
+          <div class="filters-toolbar">
+            <div class="time-filter">
+              <label for="timeStartRange">Intervallo temporale (secondi)</label>
+              <div class="time-range-row">
+                <input id="timeStartRange" type="range" min="0" max="0" value="0" />
+                <input id="timeEndRange" type="range" min="0" max="0" value="0" />
+              </div>
+              <p id="timeRangeLabel" class="hint-text">0s - 0s</p>
+            </div>
+            <div class="advanced-filters">
+              <label for="filterCountSelect">Numero filtri</label>
+              <select id="filterCountSelect">
+                <option value="1">1 filtro</option>
+                <option value="2">2 filtri</option>
+                <option value="3">3 filtri</option>
+                <option value="4">4 filtri</option>
+              </select>
+              <div id="filtersContainer" class="filters-container"></div>
+              <p class="hint-text">
+                Custom: <code>protocol:DNS</code>, <code>host:192.168.1.1</code>, <code>port:443</code>.<br />
+                Wireshark-like: <code>tcp</code>, <code>dns</code>, <code>ip.addr==8.8.8.8</code>, <code>tcp.port==443</code>.
+              </p>
+            </div>
+          </div>
           <div id="analysisPlaceholder" class="placeholder">
             Carica un file per iniziare l'analisi guidata dei protocolli.
           </div>

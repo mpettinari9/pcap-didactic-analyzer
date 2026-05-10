@@ -169,8 +169,30 @@ function parsePacket(packetBytes) {
   if (packetBytes.length < 14) return null;
 
   const etherType = (packetBytes[12] << 8) | packetBytes[13];
-  if (etherType !== 0x0800) return { protocols: ["Other"], flow: "L2/Other" };
-  if (packetBytes.length < 34) return { protocols: ["IPv4"], flow: "IPv4 truncated" };
+  if (etherType !== 0x0800) {
+    return {
+      protocols: ["Other"],
+      flow: "L2/Other",
+      srcIp: null,
+      dstIp: null,
+      srcPort: null,
+      dstPort: null,
+      l4Protocol: "Other",
+      appProtocol: null,
+    };
+  }
+  if (packetBytes.length < 34) {
+    return {
+      protocols: ["IPv4"],
+      flow: "IPv4 truncated",
+      srcIp: null,
+      dstIp: null,
+      srcPort: null,
+      dstPort: null,
+      l4Protocol: "IPv4",
+      appProtocol: null,
+    };
+  }
 
   const ipOffset = 14;
   const ihl = (packetBytes[ipOffset] & 0x0f) * 4;
@@ -181,37 +203,44 @@ function parsePacket(packetBytes) {
 
   const protocols = ["IPv4"];
   let flow = `${srcIp} -> ${dstIp}`;
+  let srcPort = null;
+  let dstPort = null;
+  let l4Protocol = "Other";
+  let appProtocol = null;
 
   if (protocolNumber === 6 && packetBytes.length >= ipOffset + ihl + 4) {
     protocols.push("TCP");
-    const srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
-    const dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
+    l4Protocol = "TCP";
+    srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
+    dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
     const tcpDataOffset = ((packetBytes[ipOffset + ihl + 12] >> 4) & 0x0f) * 4;
     const l4PayloadOffset = ipOffset + ihl + tcpDataOffset;
     const l4Payload = l4PayloadOffset < packetBytes.length
       ? packetBytes.slice(l4PayloadOffset)
       : new Uint8Array();
     flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
-    const appProto = detectByPayload(l4Payload, "TCP", srcPort, dstPort);
-    if (appProto) protocols.push(appProto);
+    appProtocol = detectByPayload(l4Payload, "TCP", srcPort, dstPort);
+    if (appProtocol) protocols.push(appProtocol);
   } else if (protocolNumber === 17 && packetBytes.length >= ipOffset + ihl + 4) {
     protocols.push("UDP");
-    const srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
-    const dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
+    l4Protocol = "UDP";
+    srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
+    dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
     const l4PayloadOffset = ipOffset + ihl + 8;
     const l4Payload = l4PayloadOffset < packetBytes.length
       ? packetBytes.slice(l4PayloadOffset)
       : new Uint8Array();
     flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
-    const appProto = detectByPayload(l4Payload, "UDP", srcPort, dstPort);
-    if (appProto) protocols.push(appProto);
+    appProtocol = detectByPayload(l4Payload, "UDP", srcPort, dstPort);
+    if (appProtocol) protocols.push(appProtocol);
   } else if (protocolNumber === 1) {
     protocols.push("ICMP");
+    l4Protocol = "ICMP";
   } else {
     protocols.push("Other");
   }
 
-  return { protocols, flow };
+  return { protocols, flow, srcIp, dstIp, srcPort, dstPort, l4Protocol, appProtocol };
 }
 
 function normalizeHostPair(flow) {
@@ -351,40 +380,86 @@ function generateTrafficInsights(protocolCounts, totalPackets, topHostFlows, tim
   return insights.slice(0, 5);
 }
 
-export async function analyzeCaptureFile(file) {
-  const extension = file.name.toLowerCase().endsWith(".pcapng") ? "pcapng" : "pcap";
-  const arrayBuffer = await file.arrayBuffer();
+function buildTimeline(packetSummaries) {
+  if (packetSummaries.length === 0) return [];
+  const maxOffsetSec = Math.max(...packetSummaries.map((packet) => packet.offsetSec));
+  const bucketSizeSec = Math.max(1, Math.ceil(maxOffsetSec / 12));
+  const buckets = [];
 
-  const packets = extension === "pcapng" ? readPcapngPackets(arrayBuffer) : readPcapPackets(arrayBuffer);
-  if (packets.length === 0) {
-    throw new Error("Nessun pacchetto leggibile trovato nel file.");
+  for (const packet of packetSummaries) {
+    const bucket = Math.floor(packet.offsetSec / bucketSizeSec);
+    buckets[bucket] = (buckets[bucket] || 0) + 1;
   }
 
+  return buckets.map((count = 0, idx) => ({
+    label: `${idx * bucketSizeSec}s`,
+    count,
+  }));
+}
+
+function matchesCustomFilter(packet, expression) {
+  const expr = expression.trim();
+  const parts = expr.split(":");
+  if (parts.length !== 2) return true;
+
+  const key = parts[0].trim().toLowerCase();
+  const value = parts[1].trim().toLowerCase();
+  if (!value) return true;
+
+  if (key === "protocol") return packet.protocols.some((proto) => proto.toLowerCase() === value);
+  if (key === "host") return `${packet.srcIp || ""} ${packet.dstIp || ""}`.toLowerCase().includes(value);
+  if (key === "port") return `${packet.srcPort || ""} ${packet.dstPort || ""}`.includes(value);
+  if (key === "flow") return packet.flow.toLowerCase().includes(value);
+  return true;
+}
+
+function matchesWiresharkLikeFilter(packet, expression) {
+  const expr = expression.trim().toLowerCase();
+  if (!expr) return true;
+  if (["tcp", "udp", "icmp", "dns", "http", "tls", "ipv4"].includes(expr)) {
+    return packet.protocols.map((proto) => proto.toLowerCase()).includes(expr);
+  }
+
+  const [left, right] = expr.split("==");
+  if (!left || !right) return true;
+  const key = left.trim();
+  const value = right.trim();
+
+  if (key === "ip.addr") return packet.srcIp === value || packet.dstIp === value;
+  if (key === "tcp.port" || key === "udp.port" || key === "port") {
+    const targetPort = Number(value);
+    return packet.srcPort === targetPort || packet.dstPort === targetPort;
+  }
+  return true;
+}
+
+export function filterPacketSummaries(packetSummaries, filters) {
+  if (!filters || filters.length === 0) return packetSummaries;
+
+  return packetSummaries.filter((packet) =>
+    filters.every((filterItem) => {
+      if (!filterItem?.value?.trim()) return true;
+      if (filterItem.type === "custom") {
+        return matchesCustomFilter(packet, filterItem.value);
+      }
+      return matchesWiresharkLikeFilter(packet, filterItem.value);
+    }),
+  );
+}
+
+export function buildAnalysisFromPacketSummaries(fileName, packetSummaries) {
   const protocolCounts = new Map();
   const flowCounts = new Map();
   const hostFlowCounts = new Map();
-  const timeline = [];
 
-  const firstTs = packets[0].timestampMs || Date.now();
-  const lastTs = packets[packets.length - 1].timestampMs || firstTs + packets.length;
-  const durationMs = Math.max(1, lastTs - firstTs);
-  const bucketSize = Math.max(1000, Math.ceil(durationMs / 12));
-
-  for (const packet of packets) {
-    const parsed = parsePacket(packet.data);
-    if (!parsed) continue;
-
-    for (const proto of parsed.protocols) {
+  for (const packet of packetSummaries) {
+    for (const proto of packet.protocols) {
       protocolCounts.set(proto, (protocolCounts.get(proto) || 0) + 1);
     }
 
-    flowCounts.set(parsed.flow, (flowCounts.get(parsed.flow) || 0) + 1);
-    const hostPair = normalizeHostPair(parsed.flow);
+    flowCounts.set(packet.flow, (flowCounts.get(packet.flow) || 0) + 1);
+    const hostPair = normalizeHostPair(packet.flow);
     hostFlowCounts.set(hostPair, (hostFlowCounts.get(hostPair) || 0) + 1);
-
-    const ts = packet.timestampMs || firstTs;
-    const bucket = Math.floor((ts - firstTs) / bucketSize);
-    timeline[bucket] = (timeline[bucket] || 0) + 1;
   }
 
   const protocolsSorted = [...protocolCounts.entries()]
@@ -393,7 +468,7 @@ export async function analyzeCaptureFile(file) {
 
   const explanations = protocolsSorted
     .slice(0, 8)
-    .map((entry) => buildDidacticExplanation(entry.protocol, entry.count, packets.length));
+    .map((entry) => buildDidacticExplanation(entry.protocol, entry.count, packetSummaries.length));
 
   const topFlows = [...flowCounts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -405,21 +480,17 @@ export async function analyzeCaptureFile(file) {
     .slice(0, 6)
     .map(([flow, count]) => ({ flow, count }));
 
-  const timelineBuckets = timeline.map((count = 0, idx) => ({
-    label: `${idx * Math.round(bucketSize / 1000)}s`,
-    count,
-  }));
-
+  const timelineBuckets = buildTimeline(packetSummaries);
   const trafficInsights = generateTrafficInsights(
     protocolCounts,
-    packets.length,
+    packetSummaries.length,
     topHostFlows,
     timelineBuckets,
   );
 
   return {
-    fileName: file.name,
-    packetCount: packets.length,
+    fileName,
+    packetCount: packetSummaries.length,
     protocolDistribution: protocolsSorted,
     explanations,
     topFlows,
@@ -427,4 +498,36 @@ export async function analyzeCaptureFile(file) {
     trafficInsights,
     timeline: timelineBuckets,
   };
+}
+
+export async function analyzeCaptureFile(file) {
+  const extension = file.name.toLowerCase().endsWith(".pcapng") ? "pcapng" : "pcap";
+  const arrayBuffer = await file.arrayBuffer();
+
+  const packets = extension === "pcapng" ? readPcapngPackets(arrayBuffer) : readPcapPackets(arrayBuffer);
+  if (packets.length === 0) {
+    throw new Error("Nessun pacchetto leggibile trovato nel file.");
+  }
+
+  const firstTs = packets[0].timestampMs || Date.now();
+  const packetSummaries = [];
+
+  for (const packet of packets) {
+    const parsed = parsePacket(packet.data);
+    if (!parsed) continue;
+    const ts = packet.timestampMs || firstTs;
+    packetSummaries.push({
+      ...parsed,
+      timestampMs: ts,
+      offsetSec: Math.max(0, Math.floor((ts - firstTs) / 1000)),
+    });
+  }
+
+  const analysis = buildAnalysisFromPacketSummaries(file.name, packetSummaries);
+  analysis.packetSummaries = packetSummaries;
+  analysis.timeRangeSec = {
+    min: 0,
+    max: packetSummaries.length > 0 ? Math.max(...packetSummaries.map((packet) => packet.offsetSec)) : 0,
+  };
+  return analysis;
 }

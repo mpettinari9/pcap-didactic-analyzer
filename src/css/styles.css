@@ -213,6 +213,65 @@ h1 {
   margin: 0 0 8px;
 }
 
+.filters-toolbar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.time-filter,
+.advanced-filters {
+  background: #f8faff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.time-filter label,
+.advanced-filters label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.time-range-row {
+  display: grid;
+  gap: 8px;
+}
+
+.hint-text {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.advanced-filters select {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.filters-container {
+  display: grid;
+  gap: 8px;
+}
+
+.filter-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px;
+}
+
+.filter-row input,
+.filter-row select,
+#filterCountSelect {
+  border: 1px solid #c9d6f8;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font: inherit;
+}
+
 .flow-list {
   margin: 0 0 12px;
   padding-left: 18px;
@@ -291,6 +350,11 @@ canvas {
 
   .layout,
   .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filters-toolbar,
+  .filter-row {
     grid-template-columns: 1fr;
   }
 }

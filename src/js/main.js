@@ -7,7 +7,9 @@ import {
 } from "./ui.js";
 import {
   analyzeCaptureFile,
+  buildAnalysisFromPacketSummaries,
   ensureParserLibraryAvailable,
+  filterPacketSummaries,
   isSupportedCaptureFile,
 } from "./services/pcapParser.js";
 import {
@@ -17,6 +19,67 @@ import {
 } from "./services/chartService.js";
 
 let cachedSamples = [];
+let currentRawAnalysis = null;
+
+function renderFilterRows(count) {
+  const container = document.getElementById("filtersContainer");
+  container.innerHTML = "";
+
+  for (let idx = 0; idx < count; idx += 1) {
+    const row = document.createElement("div");
+    row.className = "filter-row";
+    row.innerHTML = `
+      <select class="filter-type">
+        <option value="custom">Custom filter</option>
+        <option value="wireshark">Wireshark filter</option>
+      </select>
+      <input class="filter-value" type="text" placeholder="Inserisci filtro..." />
+    `;
+    container.append(row);
+  }
+}
+
+function getSelectedFilters() {
+  const rows = [...document.querySelectorAll(".filter-row")];
+  return rows.map((row) => ({
+    type: row.querySelector(".filter-type")?.value || "custom",
+    value: row.querySelector(".filter-value")?.value || "",
+  }));
+}
+
+function applyInteractiveFilters() {
+  if (!currentRawAnalysis?.packetSummaries) return;
+
+  const timeStart = Number(document.getElementById("timeStartRange").value);
+  const timeEnd = Number(document.getElementById("timeEndRange").value);
+  const startSec = Math.min(timeStart, timeEnd);
+  const endSec = Math.max(timeStart, timeEnd);
+
+  const timeFilteredPackets = currentRawAnalysis.packetSummaries.filter(
+    (packet) => packet.offsetSec >= startSec && packet.offsetSec <= endSec,
+  );
+  const selectedFilters = getSelectedFilters();
+  const finalPackets = filterPacketSummaries(timeFilteredPackets, selectedFilters);
+  const filteredAnalysis = buildAnalysisFromPacketSummaries(currentRawAnalysis.fileName, finalPackets);
+
+  document.getElementById("timeRangeLabel").textContent = `${startSec}s - ${endSec}s`;
+  renderAnalysisResults(filteredAnalysis);
+  updateChartsFromAnalysis(filteredAnalysis);
+}
+
+function setupTimeRangeControls(analysis) {
+  const startInput = document.getElementById("timeStartRange");
+  const endInput = document.getElementById("timeEndRange");
+  const maxSec = analysis.timeRangeSec?.max || 0;
+
+  startInput.min = "0";
+  endInput.min = "0";
+  startInput.max = String(maxSec);
+  endInput.max = String(maxSec);
+  startInput.value = "0";
+  endInput.value = String(maxSec);
+  document.getElementById("timeRangeLabel").textContent = `0s - ${maxSec}s`;
+}
 
 async function initializeSamplesSection() {
   try {
@@ -40,8 +103,9 @@ async function processCaptureFile(file) {
 
   try {
     const analysis = await analyzeCaptureFile(file);
-    renderAnalysisResults(analysis);
-    updateChartsFromAnalysis(analysis);
+    currentRawAnalysis = analysis;
+    setupTimeRangeControls(analysis);
+    applyInteractiveFilters();
     updateUploadStatus("Analisi completata con successo.", "success");
   } catch (error) {
     updateUploadStatus(
@@ -140,8 +204,19 @@ function attachEventListeners() {
   const input = document.getElementById("pcapInput");
   const samplesList = document.getElementById("samplesList");
   const dropzone = document.getElementById("uploadDropzone");
+  const filterCountSelect = document.getElementById("filterCountSelect");
+  const filtersContainer = document.getElementById("filtersContainer");
+  const timeStartRange = document.getElementById("timeStartRange");
+  const timeEndRange = document.getElementById("timeEndRange");
   input.addEventListener("change", handleFileSelection);
   samplesList.addEventListener("click", handleSampleClick);
+  filterCountSelect.addEventListener("change", () => {
+    renderFilterRows(Number(filterCountSelect.value));
+    applyInteractiveFilters();
+  });
+  filtersContainer.addEventListener("input", applyInteractiveFilters);
+  timeStartRange.addEventListener("input", applyInteractiveFilters);
+  timeEndRange.addEventListener("input", applyInteractiveFilters);
 
   ["dragenter", "dragover"].forEach((eventName) => {
     dropzone.addEventListener(eventName, (event) => {
@@ -167,6 +242,7 @@ function attachEventListeners() {
 
 async function bootstrap() {
   await initializeSamplesSection();
+  renderFilterRows(1);
   destroyCharts();
   renderInitialCharts();
   attachEventListeners();
