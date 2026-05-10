@@ -273,6 +273,84 @@ function buildDidacticExplanation(protocol, count, totalPackets) {
   return base;
 }
 
+function getProtocolCount(protocolCounts, protocolName) {
+  return protocolCounts.get(protocolName) || 0;
+}
+
+function generateTrafficInsights(protocolCounts, totalPackets, topHostFlows, timeline) {
+  const insights = [];
+  if (!totalPackets) return insights;
+
+  const dns = getProtocolCount(protocolCounts, "DNS");
+  const http = getProtocolCount(protocolCounts, "HTTP");
+  const tls = getProtocolCount(protocolCounts, "TLS");
+  const icmp = getProtocolCount(protocolCounts, "ICMP");
+  const tcp = getProtocolCount(protocolCounts, "TCP");
+  const udp = getProtocolCount(protocolCounts, "UDP");
+
+  const dnsRatio = (dns / totalPackets) * 100;
+  const tlsRatio = (tls / totalPackets) * 100;
+  const icmpRatio = (icmp / totalPackets) * 100;
+
+  if (dnsRatio > 25) {
+    insights.push(
+      "Il traffico DNS e elevato: potrebbe indicare fase di bootstrap, scansione di domini o molte applicazioni che risolvono nomi in parallelo.",
+    );
+  }
+
+  if (tlsRatio > 20 && http === 0) {
+    insights.push(
+      "Il traffico e prevalentemente cifrato (TLS) con poco o nessun HTTP in chiaro: scenario tipico di navigazione web moderna su HTTPS.",
+    );
+  }
+
+  if (http > 0 && tls > 0) {
+    insights.push(
+      "Sono presenti sia HTTP in chiaro sia TLS cifrato: utile per confrontare servizi legacy e servizi protetti nella stessa cattura.",
+    );
+  }
+
+  if (icmpRatio > 10) {
+    insights.push(
+      "La quota ICMP e significativa: potrebbe essere in corso attivita di diagnostica (ping/traceroute) o verifica di raggiungibilita.",
+    );
+  }
+
+  if (tcp > udp * 2) {
+    insights.push(
+      "TCP domina rispetto a UDP: la rete sembra orientata a sessioni affidabili (web, API, trasferimenti dati).",
+    );
+  } else if (udp > tcp) {
+    insights.push(
+      "UDP supera TCP: possibile presenza di servizi realtime, DNS intenso o protocolli non orientati alla connessione.",
+    );
+  }
+
+  if (topHostFlows.length > 0 && topHostFlows[0].count > totalPackets * 0.35) {
+    insights.push(
+      `Un singolo flusso host-to-host pesa molto (${topHostFlows[0].flow}): potrebbe essere il canale principale della sessione osservata.`,
+    );
+  }
+
+  const peakBucket = timeline.reduce(
+    (best, current) => (current.count > best.count ? current : best),
+    { label: "0s", count: 0 },
+  );
+  if (peakBucket.count > 0) {
+    insights.push(
+      `Picco di traffico osservato intorno a ${peakBucket.label}, con ${peakBucket.count} pacchetti nel bucket temporale.`,
+    );
+  }
+
+  if (insights.length === 0) {
+    insights.push(
+      "Il traffico appare bilanciato tra i protocolli rilevati: un buon caso didattico per studiare il comportamento generale della rete.",
+    );
+  }
+
+  return insights.slice(0, 5);
+}
+
 export async function analyzeCaptureFile(file) {
   const extension = file.name.toLowerCase().endsWith(".pcapng") ? "pcapng" : "pcap";
   const arrayBuffer = await file.arrayBuffer();
@@ -327,6 +405,18 @@ export async function analyzeCaptureFile(file) {
     .slice(0, 6)
     .map(([flow, count]) => ({ flow, count }));
 
+  const timelineBuckets = timeline.map((count = 0, idx) => ({
+    label: `${idx * Math.round(bucketSize / 1000)}s`,
+    count,
+  }));
+
+  const trafficInsights = generateTrafficInsights(
+    protocolCounts,
+    packets.length,
+    topHostFlows,
+    timelineBuckets,
+  );
+
   return {
     fileName: file.name,
     packetCount: packets.length,
@@ -334,9 +424,7 @@ export async function analyzeCaptureFile(file) {
     explanations,
     topFlows,
     topHostFlows,
-    timeline: timeline.map((count = 0, idx) => ({
-      label: `${idx * Math.round(bucketSize / 1000)}s`,
-      count,
-    })),
+    trafficInsights,
+    timeline: timelineBuckets,
   };
 }

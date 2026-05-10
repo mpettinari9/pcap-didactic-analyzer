@@ -63,12 +63,20 @@ export function renderAnalysisResults(analysis) {
     .map((flow) => `<li><code>${flow.flow}</code> - ${flow.count} pacchetti</li>`)
     .join("");
 
+  const insightsHtml = (analysis.trafficInsights || [])
+    .map((insight) => `<li>${insight}</li>`)
+    .join("");
+
   placeholder.innerHTML = `
     <div class="analysis-summary">
       <p><strong>File:</strong> ${analysis.fileName}</p>
       <p><strong>Pacchetti analizzati:</strong> ${analysis.packetCount}</p>
       <p><strong>Flussi principali:</strong></p>
       <ul class="flow-list">${flowHtml || "<li>Nessun flusso disponibile.</li>"}</ul>
+    </div>
+    <div class="insights-box">
+      <p><strong>Interpretazione automatica:</strong></p>
+      <ul class="insights-list">${insightsHtml || "<li>Nessun insight disponibile.</li>"}</ul>
     </div>
     <div class="didactic-grid">
       ${explanationsHtml || "<p>Nessuna spiegazione disponibile.</p>"}
