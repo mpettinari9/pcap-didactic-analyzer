@@ -116,6 +116,12 @@ h1 {
   background: #f2f6ff;
 }
 
+.file-dropzone.dragover {
+  border-color: #1f4fff;
+  background: #e8f0ff;
+  box-shadow: inset 0 0 0 1px #c3d5ff;
+}
+
 #pcapInput {
   display: none;
 }

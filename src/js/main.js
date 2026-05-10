@@ -78,6 +78,29 @@ async function handleFileSelection(event) {
   await processCaptureFile(file);
 }
 
+async function handleDroppedFile(file) {
+  if (!file) return;
+
+  if (!isSupportedCaptureFile(file.name)) {
+    updateUploadStatus(
+      "Formato non supportato. Carica un file .pcap o .pcapng.",
+      "error",
+    );
+    return;
+  }
+
+  const parserStatus = await ensureParserLibraryAvailable();
+  if (!parserStatus.ready) {
+    updateUploadStatus(
+      "Parser non disponibile. Controlla la connessione e riprova.",
+      "error",
+    );
+    return;
+  }
+
+  await processCaptureFile(file);
+}
+
 async function handleSampleClick(event) {
   const button = event.target.closest(".sample-load-button");
   if (!button) return;
@@ -116,8 +139,30 @@ async function handleSampleClick(event) {
 function attachEventListeners() {
   const input = document.getElementById("pcapInput");
   const samplesList = document.getElementById("samplesList");
+  const dropzone = document.getElementById("uploadDropzone");
   input.addEventListener("change", handleFileSelection);
   samplesList.addEventListener("click", handleSampleClick);
+
+  ["dragenter", "dragover"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dropzone.classList.add("dragover");
+    });
+  });
+
+  ["dragleave", "drop"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dropzone.classList.remove("dragover");
+    });
+  });
+
+  dropzone.addEventListener("drop", async (event) => {
+    const file = event.dataTransfer?.files?.[0];
+    await handleDroppedFile(file);
+  });
 }
 
 async function bootstrap() {

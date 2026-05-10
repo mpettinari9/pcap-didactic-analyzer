@@ -125,6 +125,46 @@ function identifyApplicationProtocol(srcPort, dstPort) {
   return known.get(srcPort) || known.get(dstPort) || null;
 }
 
+function decodeAsciiPrefix(bytes, maxLen = 32) {
+  const len = Math.min(bytes.length, maxLen);
+  let out = "";
+  for (let i = 0; i < len; i += 1) {
+    const b = bytes[i];
+    out += b >= 32 && b <= 126 ? String.fromCharCode(b) : ".";
+  }
+  return out;
+}
+
+function detectByPayload(l4Payload, l4Protocol, srcPort, dstPort) {
+  if (!l4Payload || l4Payload.length < 2) return null;
+
+  // DNS over UDP/TCP: header starts with transaction ID + flags.
+  if ((l4Protocol === "UDP" || l4Protocol === "TCP") && (srcPort === 53 || dstPort === 53)) {
+    return "DNS";
+  }
+
+  // TLS handshake records start with content-type 0x16 and major version 0x03.
+  if (
+    l4Protocol === "TCP" &&
+    l4Payload.length >= 5 &&
+    l4Payload[0] === 0x16 &&
+    l4Payload[1] === 0x03 &&
+    l4Payload[2] <= 0x04
+  ) {
+    return "TLS";
+  }
+
+  // HTTP cleartext methods and response prefix.
+  const httpHints = ["GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "HTTP/"];
+  const asciiPrefix = decodeAsciiPrefix(l4Payload, 12);
+  if (l4Protocol === "TCP" && httpHints.some((hint) => asciiPrefix.startsWith(hint))) {
+    return "HTTP";
+  }
+
+  // Fallback based on well-known ports.
+  return identifyApplicationProtocol(srcPort, dstPort);
+}
+
 function parsePacket(packetBytes) {
   if (packetBytes.length < 14) return null;
 
@@ -146,15 +186,24 @@ function parsePacket(packetBytes) {
     protocols.push("TCP");
     const srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
     const dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
+    const tcpDataOffset = ((packetBytes[ipOffset + ihl + 12] >> 4) & 0x0f) * 4;
+    const l4PayloadOffset = ipOffset + ihl + tcpDataOffset;
+    const l4Payload = l4PayloadOffset < packetBytes.length
+      ? packetBytes.slice(l4PayloadOffset)
+      : new Uint8Array();
     flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
-    const appProto = identifyApplicationProtocol(srcPort, dstPort);
+    const appProto = detectByPayload(l4Payload, "TCP", srcPort, dstPort);
     if (appProto) protocols.push(appProto);
   } else if (protocolNumber === 17 && packetBytes.length >= ipOffset + ihl + 4) {
     protocols.push("UDP");
     const srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
     const dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
+    const l4PayloadOffset = ipOffset + ihl + 8;
+    const l4Payload = l4PayloadOffset < packetBytes.length
+      ? packetBytes.slice(l4PayloadOffset)
+      : new Uint8Array();
     flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
-    const appProto = identifyApplicationProtocol(srcPort, dstPort);
+    const appProto = detectByPayload(l4Payload, "UDP", srcPort, dstPort);
     if (appProto) protocols.push(appProto);
   } else if (protocolNumber === 1) {
     protocols.push("ICMP");
