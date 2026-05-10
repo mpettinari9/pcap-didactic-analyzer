@@ -1,17 +1,19 @@
 import { setCurrentFile, setSamples } from "./state.js";
 import {
   updateUploadStatus,
-  renderAnalysisPlaceholder,
+  renderAnalysisResults,
   renderFileAccepted,
   renderSamples,
 } from "./ui.js";
 import {
+  analyzeCaptureFile,
   ensureParserLibraryAvailable,
   isSupportedCaptureFile,
 } from "./services/pcapParser.js";
 import {
   destroyCharts,
   renderInitialCharts,
+  updateChartsFromAnalysis,
 } from "./services/chartService.js";
 
 const DEFAULT_SAMPLES = [
@@ -60,7 +62,19 @@ async function handleFileSelection(event) {
 
   setCurrentFile(file);
   renderFileAccepted(file);
-  renderAnalysisPlaceholder(file.name);
+  updateUploadStatus("Analisi in corso...", "idle");
+
+  try {
+    const analysis = await analyzeCaptureFile(file);
+    renderAnalysisResults(analysis);
+    updateChartsFromAnalysis(analysis);
+    updateUploadStatus("Analisi completata con successo.", "success");
+  } catch (error) {
+    updateUploadStatus(
+      `Errore durante l'analisi: ${error.message || "errore sconosciuto"}.`,
+      "error",
+    );
+  }
 }
 
 function attachEventListeners() {

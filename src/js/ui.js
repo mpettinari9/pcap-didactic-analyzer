@@ -40,3 +40,35 @@ export function renderAnalysisPlaceholder(fileName) {
     spiegazioni didattiche su 3 livelli (cosa vedo, cosa significa, perche e importante).
   `;
 }
+
+export function renderAnalysisResults(analysis) {
+  const placeholder = document.getElementById("analysisPlaceholder");
+  const explanationsHtml = analysis.explanations
+    .map(
+      (item) => `
+      <article class="didactic-card">
+        <h3>${item.protocol} (${item.count})</h3>
+        <p><strong>Cosa vedo:</strong> ${item.whatYouSee}</p>
+        <p><strong>Cosa significa:</strong> ${item.whatItMeans}</p>
+        <p><strong>Perche e importante:</strong> ${item.whyItMatters}</p>
+      </article>
+    `,
+    )
+    .join("");
+
+  const flowHtml = analysis.topFlows
+    .map((flow) => `<li><code>${flow.flow}</code> - ${flow.count} pacchetti</li>`)
+    .join("");
+
+  placeholder.innerHTML = `
+    <div class="analysis-summary">
+      <p><strong>File:</strong> ${analysis.fileName}</p>
+      <p><strong>Pacchetti analizzati:</strong> ${analysis.packetCount}</p>
+      <p><strong>Flussi principali:</strong></p>
+      <ul class="flow-list">${flowHtml || "<li>Nessun flusso disponibile.</li>"}</ul>
+    </div>
+    <div class="didactic-grid">
+      ${explanationsHtml || "<p>Nessuna spiegazione disponibile.</p>"}
+    </div>
+  `;
+}
