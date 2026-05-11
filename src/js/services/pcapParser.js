@@ -1,4 +1,8 @@
 const SUPPORTED_EXTENSIONS = [".pcap", ".pcapng"];
+const ETHERTYPE_IPV4 = 0x0800;
+const ETHERTYPE_IPV6 = 0x86dd;
+const ETHERTYPE_VLAN_8021Q = 0x8100;
+const ETHERTYPE_VLAN_8021AD = 0x88a8;
 
 export function isSupportedCaptureFile(fileName) {
   const lowerName = fileName.toLowerCase();
@@ -118,8 +122,10 @@ function readPcapngPackets(arrayBuffer) {
 function identifyApplicationProtocol(srcPort, dstPort) {
   const known = new Map([
     [53, "DNS"],
+    [5353, "DNS"],
     [80, "HTTP"],
     [443, "TLS"],
+    [853, "TLS"],
     [123, "NTP"],
   ]);
   return known.get(srcPort) || known.get(dstPort) || null;
@@ -136,18 +142,41 @@ function decodeAsciiPrefix(bytes, maxLen = 32) {
 }
 
 function detectByPayload(l4Payload, l4Protocol, srcPort, dstPort) {
-  if (!l4Payload || l4Payload.length < 2) return null;
+  if (!l4Payload || l4Payload.length < 2) {
+    return identifyApplicationProtocol(srcPort, dstPort);
+  }
 
   // DNS over UDP/TCP: header starts with transaction ID + flags.
   if ((l4Protocol === "UDP" || l4Protocol === "TCP") && (srcPort === 53 || dstPort === 53)) {
     return "DNS";
+  }
+  if ((l4Protocol === "UDP" || l4Protocol === "TCP") && (srcPort === 5353 || dstPort === 5353)) {
+    return "DNS";
+  }
+  if (
+    (l4Protocol === "UDP" || l4Protocol === "TCP") &&
+    l4Payload.length >= 12 &&
+    (l4Payload[2] & 0x80) <= 0x80
+  ) {
+    const qdCount = (l4Payload[4] << 8) | l4Payload[5];
+    const anCount = (l4Payload[6] << 8) | l4Payload[7];
+    if (qdCount > 0 || anCount > 0) return "DNS";
+  }
+  if (l4Protocol === "TCP" && l4Payload.length >= 14) {
+    // DNS over TCP prepends a two-byte length field before the DNS header.
+    const dnsLen = (l4Payload[0] << 8) | l4Payload[1];
+    if (dnsLen >= 12 && dnsLen <= l4Payload.length - 2) {
+      const qdCount = (l4Payload[6] << 8) | l4Payload[7];
+      const anCount = (l4Payload[8] << 8) | l4Payload[9];
+      if (qdCount > 0 || anCount > 0) return "DNS";
+    }
   }
 
   // TLS handshake records start with content-type 0x16 and major version 0x03.
   if (
     l4Protocol === "TCP" &&
     l4Payload.length >= 5 &&
-    l4Payload[0] === 0x16 &&
+    [0x14, 0x15, 0x16, 0x17].includes(l4Payload[0]) &&
     l4Payload[1] === 0x03 &&
     l4Payload[2] <= 0x04
   ) {
@@ -155,7 +184,17 @@ function detectByPayload(l4Payload, l4Protocol, srcPort, dstPort) {
   }
 
   // HTTP cleartext methods and response prefix.
-  const httpHints = ["GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "HTTP/"];
+  const httpHints = [
+    "GET ",
+    "POST ",
+    "PUT ",
+    "DELETE ",
+    "HEAD ",
+    "OPTIONS ",
+    "PATCH ",
+    "CONNECT ",
+    "HTTP/",
+  ];
   const asciiPrefix = decodeAsciiPrefix(l4Payload, 12);
   if (l4Protocol === "TCP" && httpHints.some((hint) => asciiPrefix.startsWith(hint))) {
     return "HTTP";
@@ -165,23 +204,64 @@ function detectByPayload(l4Payload, l4Protocol, srcPort, dstPort) {
   return identifyApplicationProtocol(srcPort, dstPort);
 }
 
-function parsePacket(packetBytes) {
-  if (packetBytes.length < 14) return null;
+function parseL4Info(packetBytes, networkOffset, srcIp, dstIp, protocolNumber) {
+  const protocols = [];
+  let flow = `${srcIp} -> ${dstIp}`;
+  let srcPort = null;
+  let dstPort = null;
+  let l4Protocol = "Other";
+  let appProtocol = null;
 
-  const etherType = (packetBytes[12] << 8) | packetBytes[13];
-  if (etherType !== 0x0800) {
-    return {
-      protocols: ["Other"],
-      flow: "L2/Other",
-      srcIp: null,
-      dstIp: null,
-      srcPort: null,
-      dstPort: null,
-      l4Protocol: "Other",
-      appProtocol: null,
-    };
+  if (protocolNumber === 6 && packetBytes.length >= networkOffset + 20) {
+    protocols.push("TCP");
+    l4Protocol = "TCP";
+    srcPort = (packetBytes[networkOffset] << 8) | packetBytes[networkOffset + 1];
+    dstPort = (packetBytes[networkOffset + 2] << 8) | packetBytes[networkOffset + 3];
+    const tcpDataOffset = ((packetBytes[networkOffset + 12] >> 4) & 0x0f) * 4;
+    if (tcpDataOffset >= 20) {
+      const l4PayloadOffset = networkOffset + tcpDataOffset;
+      const l4Payload = l4PayloadOffset < packetBytes.length
+        ? packetBytes.slice(l4PayloadOffset)
+        : new Uint8Array();
+      appProtocol = detectByPayload(l4Payload, "TCP", srcPort, dstPort);
+    } else {
+      appProtocol = identifyApplicationProtocol(srcPort, dstPort);
+    }
+    flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
+    if (appProtocol) protocols.push(appProtocol);
+  } else if (protocolNumber === 17 && packetBytes.length >= networkOffset + 8) {
+    protocols.push("UDP");
+    l4Protocol = "UDP";
+    srcPort = (packetBytes[networkOffset] << 8) | packetBytes[networkOffset + 1];
+    dstPort = (packetBytes[networkOffset + 2] << 8) | packetBytes[networkOffset + 3];
+    const l4PayloadOffset = networkOffset + 8;
+    const l4Payload = l4PayloadOffset < packetBytes.length
+      ? packetBytes.slice(l4PayloadOffset)
+      : new Uint8Array();
+    flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
+    appProtocol = detectByPayload(l4Payload, "UDP", srcPort, dstPort);
+    if (appProtocol) protocols.push(appProtocol);
+  } else if (protocolNumber === 1 || protocolNumber === 58) {
+    protocols.push("ICMP");
+    l4Protocol = "ICMP";
+  } else {
+    protocols.push("Other");
   }
-  if (packetBytes.length < 34) {
+
+  return { protocols, flow, srcPort, dstPort, l4Protocol, appProtocol };
+}
+
+function formatIPv6Address(bytes, offset) {
+  const groups = [];
+  for (let i = 0; i < 16; i += 2) {
+    const value = (bytes[offset + i] << 8) | bytes[offset + i + 1];
+    groups.push(value.toString(16));
+  }
+  return groups.join(":");
+}
+
+function parseIPv4Packet(packetBytes, ipOffset) {
+  if (packetBytes.length < ipOffset + 20) {
     return {
       protocols: ["IPv4"],
       flow: "IPv4 truncated",
@@ -194,53 +274,106 @@ function parsePacket(packetBytes) {
     };
   }
 
-  const ipOffset = 14;
   const ihl = (packetBytes[ipOffset] & 0x0f) * 4;
-  const protocolNumber = packetBytes[ipOffset + 9];
-
-  const srcIp = `${packetBytes[ipOffset + 12]}.${packetBytes[ipOffset + 13]}.${packetBytes[ipOffset + 14]}.${packetBytes[ipOffset + 15]}`;
-  const dstIp = `${packetBytes[ipOffset + 16]}.${packetBytes[ipOffset + 17]}.${packetBytes[ipOffset + 18]}.${packetBytes[ipOffset + 19]}`;
-
-  const protocols = ["IPv4"];
-  let flow = `${srcIp} -> ${dstIp}`;
-  let srcPort = null;
-  let dstPort = null;
-  let l4Protocol = "Other";
-  let appProtocol = null;
-
-  if (protocolNumber === 6 && packetBytes.length >= ipOffset + ihl + 4) {
-    protocols.push("TCP");
-    l4Protocol = "TCP";
-    srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
-    dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
-    const tcpDataOffset = ((packetBytes[ipOffset + ihl + 12] >> 4) & 0x0f) * 4;
-    const l4PayloadOffset = ipOffset + ihl + tcpDataOffset;
-    const l4Payload = l4PayloadOffset < packetBytes.length
-      ? packetBytes.slice(l4PayloadOffset)
-      : new Uint8Array();
-    flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
-    appProtocol = detectByPayload(l4Payload, "TCP", srcPort, dstPort);
-    if (appProtocol) protocols.push(appProtocol);
-  } else if (protocolNumber === 17 && packetBytes.length >= ipOffset + ihl + 4) {
-    protocols.push("UDP");
-    l4Protocol = "UDP";
-    srcPort = (packetBytes[ipOffset + ihl] << 8) | packetBytes[ipOffset + ihl + 1];
-    dstPort = (packetBytes[ipOffset + ihl + 2] << 8) | packetBytes[ipOffset + ihl + 3];
-    const l4PayloadOffset = ipOffset + ihl + 8;
-    const l4Payload = l4PayloadOffset < packetBytes.length
-      ? packetBytes.slice(l4PayloadOffset)
-      : new Uint8Array();
-    flow = `${srcIp}:${srcPort} -> ${dstIp}:${dstPort}`;
-    appProtocol = detectByPayload(l4Payload, "UDP", srcPort, dstPort);
-    if (appProtocol) protocols.push(appProtocol);
-  } else if (protocolNumber === 1) {
-    protocols.push("ICMP");
-    l4Protocol = "ICMP";
-  } else {
-    protocols.push("Other");
+  if (ihl < 20 || packetBytes.length < ipOffset + ihl) {
+    return {
+      protocols: ["IPv4"],
+      flow: "IPv4 malformed",
+      srcIp: null,
+      dstIp: null,
+      srcPort: null,
+      dstPort: null,
+      l4Protocol: "IPv4",
+      appProtocol: null,
+    };
   }
 
-  return { protocols, flow, srcIp, dstIp, srcPort, dstPort, l4Protocol, appProtocol };
+  const protocolNumber = packetBytes[ipOffset + 9];
+  const srcIp = `${packetBytes[ipOffset + 12]}.${packetBytes[ipOffset + 13]}.${packetBytes[ipOffset + 14]}.${packetBytes[ipOffset + 15]}`;
+  const dstIp = `${packetBytes[ipOffset + 16]}.${packetBytes[ipOffset + 17]}.${packetBytes[ipOffset + 18]}.${packetBytes[ipOffset + 19]}`;
+  const parsedL4 = parseL4Info(packetBytes, ipOffset + ihl, srcIp, dstIp, protocolNumber);
+
+  return {
+    protocols: ["IPv4", ...parsedL4.protocols],
+    flow: parsedL4.flow,
+    srcIp,
+    dstIp,
+    srcPort: parsedL4.srcPort,
+    dstPort: parsedL4.dstPort,
+    l4Protocol: parsedL4.l4Protocol,
+    appProtocol: parsedL4.appProtocol,
+  };
+}
+
+function parseIPv6Packet(packetBytes, ipOffset) {
+  if (packetBytes.length < ipOffset + 40) {
+    return {
+      protocols: ["IPv6"],
+      flow: "IPv6 truncated",
+      srcIp: null,
+      dstIp: null,
+      srcPort: null,
+      dstPort: null,
+      l4Protocol: "IPv6",
+      appProtocol: null,
+    };
+  }
+
+  const nextHeader = packetBytes[ipOffset + 6];
+  const srcIp = formatIPv6Address(packetBytes, ipOffset + 8);
+  const dstIp = formatIPv6Address(packetBytes, ipOffset + 24);
+  const parsedL4 = parseL4Info(packetBytes, ipOffset + 40, srcIp, dstIp, nextHeader);
+
+  return {
+    protocols: ["IPv6", ...parsedL4.protocols],
+    flow: parsedL4.flow,
+    srcIp,
+    dstIp,
+    srcPort: parsedL4.srcPort,
+    dstPort: parsedL4.dstPort,
+    l4Protocol: parsedL4.l4Protocol,
+    appProtocol: parsedL4.appProtocol,
+  };
+}
+
+function getEtherTypeAndPayloadOffset(packetBytes) {
+  if (packetBytes.length < 14) return { etherType: null, payloadOffset: null };
+
+  let etherType = (packetBytes[12] << 8) | packetBytes[13];
+  let payloadOffset = 14;
+
+  if ((etherType === ETHERTYPE_VLAN_8021Q || etherType === ETHERTYPE_VLAN_8021AD) && packetBytes.length >= 18) {
+    etherType = (packetBytes[16] << 8) | packetBytes[17];
+    payloadOffset = 18;
+  }
+
+  return { etherType, payloadOffset };
+}
+
+function parsePacket(packetBytes) {
+  if (packetBytes.length < 14) return null;
+
+  const { etherType, payloadOffset } = getEtherTypeAndPayloadOffset(packetBytes);
+  if (etherType === null || payloadOffset === null) return null;
+
+  if (etherType === ETHERTYPE_IPV4) {
+    return parseIPv4Packet(packetBytes, payloadOffset);
+  }
+
+  if (etherType === ETHERTYPE_IPV6) {
+    return parseIPv6Packet(packetBytes, payloadOffset);
+  }
+
+  return {
+    protocols: ["Other"],
+    flow: "L2/Other",
+    srcIp: null,
+    dstIp: null,
+    srcPort: null,
+    dstPort: null,
+    l4Protocol: "Other",
+    appProtocol: null,
+  };
 }
 
 function normalizeHostPair(flow) {
